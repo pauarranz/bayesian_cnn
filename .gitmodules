@@ -1,0 +1,6 @@
+[submodule "examples/BayesianMnist"]
+	path = examples/BayesianMnist
+	url = https://github.com/french-paragon/BayesianMnist
+[submodule "lidc/bayesian_seg/bcnn"]
+	path = lidc/bayesian_seg/bcnn
+	url = https://github.com/sandialabs/bcnn.git
