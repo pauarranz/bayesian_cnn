@@ -82,7 +82,12 @@ class RunExperiment:
 		"""
 
 		# Create dataset instance with augmentation
-		dataset = LidcNoduleDataset(data_dir, num_slices=6, transform=ToTensorWithOriginalShape(), augment=rotate_image)
+		dataset = LidcNoduleDataset(
+			data_dir,
+			num_slices=6,
+			transform=ToTensorWithOriginalShape(),
+			augment=rotate_image,
+		)
 		print(f'Data shape: {np.array(dataset[0][0]).shape}')
 		# Divide between train and test dataset
 		train, test = torch.utils.data.random_split(dataset, lengths=[0.7, 0.3])
@@ -121,10 +126,6 @@ class RunExperiment:
 						#print(f"Labels batch shape: {labels.size()}")
 
 						pred = model(images, stochastic=True)
-						#print(f"Pred size: {pred.size()}")
-						# Reshape predictions to match the batch size of labels
-						pred = pred.view(labels.size(0), -1)  # TODO: test with 2 instead of -1 in reference to 2 output classes in the prediction
-						#print(f"Pred size: {pred.size()}")
 
 						logprob = loss(pred, labels)
 						l = self.N * logprob
@@ -211,8 +212,8 @@ class RunExperiment:
 
 if __name__ == '__main__':
 	exp = RunExperiment(
-		no_train=True,
-		save_dir=Path('C:\\Users\\pau_a\\Documents\\Python_scripts\\bayesian_convolutional_neural_network\\lidc\\bayesian\\models')
+		no_train=False,
+		save_dir=Path('C:\\Users\\pau_a\\Documents\\Python_scripts\\bayesian_convolutional_neural_network\\lidc\\bayesian\\models_w_augmentation')
 	)
 	exp.load_data(data_dir=Path('F:\\master\\manifest-1600709154662\\nodules_16slices'))
 	exp.get_models()

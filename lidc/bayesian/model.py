@@ -228,7 +228,6 @@ class MeanFieldGaussian3DConvolution(VIModule):
 		)
 
 
-
 class BayesianLidcNodulesNet(VIModule):
 	def __init__(
 			self,
@@ -258,13 +257,13 @@ class BayesianLidcNodulesNet(VIModule):
 			kernel_size=(1, 5, 5),
 			initPriorSigmaScale=1e-7)
 		self.linear1 = MeanFieldGaussianFeedForward(
-			416,
-			128,
+			5408,
+			676,
 			weightPriorSigma=linearWPriorSigma,
 			biasPriorSigma=linearBPriorSigma,
 			initPriorSigmaScale=1e-7)
 		self.linear2 = MeanFieldGaussianFeedForward(
-			128,
+			676,
 			2,  # The number of classes to predict
 			weightPriorSigma=linearWPriorSigma,
 			biasPriorSigma=linearBPriorSigma,
@@ -280,8 +279,10 @@ class BayesianLidcNodulesNet(VIModule):
 		
 		x = nn.functional.relu(nn.functional.max_pool3d(x, 2))
 		
-		x = x.view(-1, 416)
-		
+		# Get batch size
+		batch_size = x.shape[0]
+		# Reshape data to have one array for each image
+		x = x.view(batch_size, -1)
 		x = nn.functional.relu(self.linear1(x, stochastic=stochastic))
 		
 		if self.p_mc_dropout is not None:
