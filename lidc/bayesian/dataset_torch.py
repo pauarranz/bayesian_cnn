@@ -7,15 +7,16 @@ from pathlib import Path
 from scipy.ndimage import rotate
 import random
 import matplotlib.pyplot as plt
+from collections import Counter
 
 
 class LidcNoduleDataset(Dataset):
-    def __init__(self, lidc_path, num_slices, transform=None, augment=None, augmentation_prob=0.8):
+    def __init__(self, lidc_path, num_slices, transform=None, augment=True, filter_label: int = None):
         self.lidc_path = lidc_path
         self.num_slices = num_slices
         self.transform = transform
         self.augment = augment
-        self.augmentation_prob = augmentation_prob
+        self.filter_label = filter_label
         self.images = []
         self.diagnostics = []
         self.load_data()
@@ -35,45 +36,55 @@ class LidcNoduleDataset(Dataset):
     def load_data(self):
         nodules_path = list(self.lidc_path.iterdir())
         for nodule_path in nodules_path:
-            images_path = list(nodule_path.iterdir())
-            images_path = images_path[
-                          int(len(images_path) / 2) - int(self.num_slices / 2):int(len(images_path) / 2) + int(
-                              self.num_slices / 2)]
-            image_nodule = []
-            for image_path in images_path:
-                image_slice = np.array(Image.open(image_path)) / 255.0
-                image_nodule.append(image_slice)
-            image_nodule = np.array(image_nodule)
-
+            # Create label
             diag = int(nodule_path.name.split('_')[5])
-            if image_nodule.shape == (self.num_slices, 64, 64) and diag != 3:
-                image_nodule = np.expand_dims(image_nodule, axis=0)
-                # Simplify label
-                if diag < 3:
-                    label = 0
-                else:
-                    label = 1
-                # Add data point to dataset
-                self.images.append(image_nodule)
-                self.diagnostics.append(label)
+            # Simplify label
+            if diag < 3:
+                label = 0
+            else:
+                label = 1
 
-                # Data augmentation
-                if self.augment:
-                    if label == 1:
-                        # For each category 1 data point generate 3 new ones (due to dataset imbalance)
-                        for rep in range(3):
-                            self.images.append(rotate_image(image_nodule))
-                            self.diagnostics.append(label)
-                    elif label == 0:
-                        # For each category 0 data point generate 0.8 new ones (if only category 1 is augmented, the algorithm learns that data augmentation is a feature that defines category 1)
-                        if 0.8 > random.random():
-                            self.images.append(rotate_image(image_nodule))
-                            self.diagnostics.append(label)
+            # Add data point if:
+            #      diagnostic is not unconclusive, and:
+            #              No filter specified, or:
+            #              Filter specified, but data point satisfies filter condition
+            is_filter = self.filter_label is not None
+            is_filter_match = label == self.filter_label
+            if diag != 3 and (not is_filter or is_filter_match):
+                images_path = list(nodule_path.iterdir())
+                images_path = images_path[
+                              int(len(images_path) / 2) - int(self.num_slices / 2):int(len(images_path) / 2) + int(
+                                  self.num_slices / 2)]
+                image_nodule = []
+                for image_path in images_path:
+                    image_slice = np.array(Image.open(image_path)) / 255.0
+                    image_nodule.append(image_slice)
+                image_nodule = np.array(image_nodule)
 
-            elif image_nodule.shape != (self.num_slices, 64, 64):
-                print(
-                    f'[ERROR] {nodule_path.name} has shape {image_nodule.shape}, but expected shape is: ({self.num_slices}, 64, 64)')
+                if image_nodule.shape == (self.num_slices, 64, 64) and diag != 3:
+                    image_nodule = np.expand_dims(image_nodule, axis=0)
+                    # Add data point to dataset
+                    self.images.append(image_nodule)
+                    self.diagnostics.append(label)
 
+                    # Data augmentation
+                    if self.augment:
+                        if label == 1:
+                            # For each category 1 data point generate 3 new ones (due to dataset imbalance)
+                            for rep in range(3):
+                                self.images.append(rotate_image(image_nodule))
+                                self.diagnostics.append(label)
+                        elif label == 0:
+                            # For each category 0 data point generate 0.8 new ones (if only category 1 is augmented, the algorithm learns that data augmentation is a feature that defines category 1)
+                            if 0.8 > random.random():
+                                self.images.append(rotate_image(image_nodule))
+                                self.diagnostics.append(label)
+
+                elif image_nodule.shape != (self.num_slices, 64, 64):
+                    print(
+                        f'[ERROR] {nodule_path.name} has shape {image_nodule.shape}, but expected shape is: ({self.num_slices}, 64, 64)')
+
+        print(f'# data points, by label: {Counter(self.diagnostics)}')
 
 # Define data augmentation function
 def rotate_image(image):
@@ -121,7 +132,7 @@ if __name__ == '__main__':
     num_slices = 6
 
     # Create dataset instance with augmentation
-    dataset = LidcNoduleDataset(lidc_path, num_slices, transform=ToTensorWithOriginalShape(), augment=rotate_image)
+    dataset = LidcNoduleDataset(lidc_path, num_slices, transform=ToTensorWithOriginalShape(), augment=True)
 
     # Example access to data
     image, label = dataset[0]

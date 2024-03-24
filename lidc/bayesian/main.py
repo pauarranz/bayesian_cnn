@@ -50,7 +50,7 @@ class RunExperiment:
 	):
 		"""
 
-		:param filtered_class: The class to ignore during training.
+		:param filtered_class: The class to load from data
 		:param save_dir: Directory where the models can be saved or loaded from.
 		:param no_train: Load the models directly instead of training.
 		:param n_epochs: The number of epochs to train for.
@@ -86,7 +86,8 @@ class RunExperiment:
 			data_dir,
 			num_slices=6,
 			transform=ToTensorWithOriginalShape(),
-			augment=rotate_image,
+			augment=True,
+			filter_label=self.filtered_class,
 		)
 		print(f'Data shape: {np.array(dataset[0][0]).shape}')
 		# Divide between train and test dataset
@@ -171,11 +172,8 @@ class RunExperiment:
 				model = self.models[model]
 
 				pred = model(images)
-				pred = pred.view(labels.size(0), 2)  # TODO: test with 2 instead of -1 in reference to 2 output classes in the prediction
 				pred_exp = torch.exp(pred)
 				samples[i, :, :] = pred_exp
-
-			print("")
 
 			withinSampleMean = torch.mean(samples, dim=0)
 			samplesMean = torch.mean(samples, dim=(0, 1))
@@ -183,8 +181,7 @@ class RunExperiment:
 			withinSampleStd = torch.sqrt(torch.mean(torch.var(samples, dim=0), dim=0))
 			acrossSamplesStd = torch.std(withinSampleMean, dim=0)
 
-			print("")
-			print("Class prediction analysis:")
+			print("\n\nClass prediction analysis:")
 			print("\tMean class probabilities:")
 			print(samplesMean)
 			print("\tPrediction standard deviation per sample:")
@@ -192,28 +189,22 @@ class RunExperiment:
 			print("\tPrediction standard deviation across samples:")
 			print(acrossSamplesStd)
 
-			plt.figure("Seen class probabilities")
-			plt.bar(np.arange(10), samplesMean.numpy())
-			plt.xlabel('digits')
-			plt.ylabel('digit prob')
-			plt.ylim([0, 1])
-			plt.xticks(np.arange(10))
-
-			plt.figure("Seen inner and outter sample std")
-			plt.bar(np.arange(10) - 0.2, withinSampleStd.numpy(), width=0.4, label="Within sample")
-			plt.bar(np.arange(10) + 0.2, acrossSamplesStd.numpy(), width=0.4, label="Across samples")
-			plt.legend()
-			plt.xlabel('digits')
-			plt.ylabel('std digit prob')
-			plt.xticks(np.arange(10))
-
-		plt.show(block=True)
-
 
 if __name__ == '__main__':
 	exp = RunExperiment(
-		no_train=False,
-		save_dir=Path('C:\\Users\\pau_a\\Documents\\Python_scripts\\bayesian_convolutional_neural_network\\lidc\\bayesian\\models_w_augmentation')
+		no_train=True,
+		save_dir=Path('C:\\Users\\pau_a\\Documents\\Python_scripts\\bayesian_convolutional_neural_network\\lidc\\bayesian\\models_w_augmentation'),
+		filtered_class=1,
+	)
+	exp.load_data(data_dir=Path('F:\\master\\manifest-1600709154662\\nodules_16slices'))
+	exp.get_models()
+	exp.test_models()
+
+	exp = RunExperiment(
+		no_train=True,
+		save_dir=Path(
+			'C:\\Users\\pau_a\\Documents\\Python_scripts\\bayesian_convolutional_neural_network\\lidc\\bayesian\\models_w_augmentation'),
+		filtered_class=0,
 	)
 	exp.load_data(data_dir=Path('F:\\master\\manifest-1600709154662\\nodules_16slices'))
 	exp.get_models()
