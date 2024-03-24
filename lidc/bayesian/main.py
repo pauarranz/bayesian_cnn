@@ -115,10 +115,16 @@ class RunExperiment:
 
 				for n in np.arange(self.n_epochs):
 
-					for batch_id, sampl in enumerate(self.train_loader):
+					for batch_id, sampl in enumerate(iter(self.train_loader)):
 						images, labels = sampl
+						#print(f"Feature batch shape: {images.size()}")
+						#print(f"Labels batch shape: {labels.size()}")
 
 						pred = model(images, stochastic=True)
+						#print(f"Pred size: {pred.size()}")
+						# Reshape predictions to match the batch size of labels
+						pred = pred.view(labels.size(0), -1)  # TODO: test with 2 instead of -1 in reference to 2 output classes in the prediction
+						#print(f"Pred size: {pred.size()}")
 
 						logprob = loss(pred, labels)
 						l = self.N * logprob
@@ -151,80 +157,22 @@ class RunExperiment:
 			if self.save_dir is not None:
 				save_models(self.models, self.save_dir)
 
-	def test_seen_class(self, test_class=4):
-		"""
-
-		:param test_class: int
-			The class to test against that is not the filtered class
-		:return:
-		"""
-		if test_class != self.filtered_class:
-
-			train_filtered_seen, test_filtered_seen = get_sets(filtered_class=test_class, remove_filtered=False)
-
-			with torch.no_grad():
-
-				samples = torch.zeros((self.n_runtests, len(test_filtered_seen), 10))
-
-				test_loader = DataLoader(test_filtered_seen, batch_size=len(test_filtered_seen))
-				images, labels = next(iter(test_loader))
-
-				for i in np.arange(self.n_runtests):
-					print("\r", "\tTest run {}/{}".format(i + 1, self.n_runtests), end="")
-					model = np.random.randint(self.num_networks)
-					model = self.models[model]
-
-					samples[i, :, :] = torch.exp(model(images))
-
-				print("")
-
-				withinSampleMean = torch.mean(samples, dim=0)
-				samplesMean = torch.mean(samples, dim=(0, 1))
-
-				withinSampleStd = torch.sqrt(torch.mean(torch.var(samples, dim=0), dim=0))
-				acrossSamplesStd = torch.std(withinSampleMean, dim=0)
-
-				print("")
-				print("Class prediction analysis:")
-				print("\tMean class probabilities:")
-				print(samplesMean)
-				print("\tPrediction standard deviation per sample:")
-				print(withinSampleStd)
-				print("\tPrediction standard deviation across samples:")
-				print(acrossSamplesStd)
-
-				plt.figure("Seen class probabilities")
-				plt.bar(np.arange(10), samplesMean.numpy())
-				plt.xlabel('digits')
-				plt.ylabel('digit prob')
-				plt.ylim([0, 1])
-				plt.xticks(np.arange(10))
-
-				plt.figure("Seen inner and outter sample std")
-				plt.bar(np.arange(10) - 0.2, withinSampleStd.numpy(), width=0.4, label="Within sample")
-				plt.bar(np.arange(10) + 0.2, acrossSamplesStd.numpy(), width=0.4, label="Across samples")
-				plt.legend()
-				plt.xlabel('digits')
-				plt.ylabel('std digit prob')
-				plt.xticks(np.arange(10))
-
-			plt.show(block=True)
-		else:
-			print(f'Seen class test not made, selected class to test "{test_class}" is the unseen class')
-
-	def test_unseen_class(self):
+	def test_models(self):
 		with torch.no_grad():
-			samples = torch.zeros((self.n_runtests, len(self.test_filtered), 10))
 
-			test_loader = DataLoader(self.test_filtered, batch_size=len(self.test_filtered))
-			images, labels = next(iter(test_loader))
+			samples = torch.zeros((self.n_runtests, self.test_loader.batch_size, 2))
+
+			images, labels = next(iter(self.test_loader))
 
 			for i in np.arange(self.n_runtests):
 				print("\r", "\tTest run {}/{}".format(i + 1, self.n_runtests), end="")
 				model = np.random.randint(self.num_networks)
 				model = self.models[model]
 
-				samples[i, :, :] = torch.exp(model(images))
+				pred = model(images)
+				pred = pred.view(labels.size(0), 2)  # TODO: test with 2 instead of -1 in reference to 2 output classes in the prediction
+				pred_exp = torch.exp(pred)
+				samples[i, :, :] = pred_exp
 
 			print("")
 
@@ -243,56 +191,14 @@ class RunExperiment:
 			print("\tPrediction standard deviation across samples:")
 			print(acrossSamplesStd)
 
-			plt.figure("Unseen class probabilities")
+			plt.figure("Seen class probabilities")
 			plt.bar(np.arange(10), samplesMean.numpy())
 			plt.xlabel('digits')
 			plt.ylabel('digit prob')
 			plt.ylim([0, 1])
 			plt.xticks(np.arange(10))
 
-			plt.figure("Unseen inner and outer sample std")
-			plt.bar(np.arange(10) - 0.2, withinSampleStd.numpy(), width=0.4, label="Within sample")
-			plt.bar(np.arange(10) + 0.2, acrossSamplesStd.numpy(), width=0.4, label="Across samples")
-			plt.legend()
-			plt.xlabel('digits')
-			plt.ylabel('std digit prob')
-			plt.xticks(np.arange(10))
-		plt.show()
-
-	def test_white_noise(self):
-		with torch.no_grad():
-			l = 1000
-
-			samples = torch.zeros((self.n_runtests, l, 10))
-
-			random = torch.rand((l, 1, 28, 28))
-
-			for i in np.arange(self.n_runtests):
-				print("\r", "\tTest run {}/{}".format(i + 1, self.n_runtests), end="")
-				model = np.random.randint(self.num_networks)
-				model = self.models[model]
-
-				samples[i, :, :] = torch.exp(model(random))
-
-			withinSampleMean = torch.mean(samples, dim=0)
-			samplesMean = torch.mean(samples, dim=(0, 1))
-
-			withinSampleStd = torch.sqrt(torch.mean(torch.var(samples, dim=0), dim=0))
-			acrossSamplesStd = torch.std(withinSampleMean, dim=0)
-
-			print("\n\nClass prediction analysis:")
-			print(f"\tMean class probabilities:\n{samplesMean}")
-			print(f"\tPrediction standard deviation per sample:\n{withinSampleStd}")
-			print(f"\tPrediction standard deviation across samples:\n{acrossSamplesStd}")
-
-			plt.figure("White noise class probabilities")
-			plt.bar(np.arange(10), samplesMean.numpy())
-			plt.xlabel('digits')
-			plt.ylabel('digit prob')
-			plt.ylim([0, 1])
-			plt.xticks(np.arange(10))
-
-			plt.figure("White noise inner and outer sample std")
+			plt.figure("Seen inner and outter sample std")
 			plt.bar(np.arange(10) - 0.2, withinSampleStd.numpy(), width=0.4, label="Within sample")
 			plt.bar(np.arange(10) + 0.2, acrossSamplesStd.numpy(), width=0.4, label="Across samples")
 			plt.legend()
@@ -300,17 +206,14 @@ class RunExperiment:
 			plt.ylabel('std digit prob')
 			plt.xticks(np.arange(10))
 
-		plt.show()
+		plt.show(block=True)
 
 
 if __name__ == '__main__':
 	exp = RunExperiment(
-		no_train=False,
-		save_dir=Path('/lidc/bayesian/models')
+		no_train=True,
+		save_dir=Path('C:\\Users\\pau_a\\Documents\\Python_scripts\\bayesian_convolutional_neural_network\\lidc\\bayesian\\models')
 	)
 	exp.load_data(data_dir=Path('F:\\master\\manifest-1600709154662\\nodules_16slices'))
 	exp.get_models()
-	#exp.test_seen_class(test_class=4)
-	#exp.test_unseen_class()
-	#exp.test_white_noise()
-
+	exp.test_models()
