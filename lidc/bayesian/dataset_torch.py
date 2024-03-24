@@ -27,9 +27,6 @@ class LidcNoduleDataset(Dataset):
         image = self.images[idx]
         diag = self.diagnostics[idx]
 
-        if self.augment and self.should_augment(diag):
-            image = self.augment(image)
-
         if self.transform:
             image = self.transform(image)
 
@@ -51,24 +48,31 @@ class LidcNoduleDataset(Dataset):
             diag = int(nodule_path.name.split('_')[5])
             if image_nodule.shape == (self.num_slices, 64, 64) and diag != 3:
                 image_nodule = np.expand_dims(image_nodule, axis=0)
-                self.images.append(image_nodule)
+                # Simplify label
                 if diag < 3:
-                    self.diagnostics.append(0)
+                    label = 0
                 else:
-                    self.diagnostics.append(1)
+                    label = 1
+                # Add data point to dataset
+                self.images.append(image_nodule)
+                self.diagnostics.append(label)
+
+                # Data augmentation
+                if self.augment:
+                    if label == 1:
+                        # For each category 1 data point generate 3 new ones (due to dataset imbalance)
+                        for rep in range(3):
+                            self.images.append(rotate_image(image_nodule))
+                            self.diagnostics.append(label)
+                    elif label == 0:
+                        # For each category 0 data point generate 0.8 new ones (if only category 1 is augmented, the algorithm learns that data augmentation is a feature that defines category 1)
+                        if 0.8 > random.random():
+                            self.images.append(rotate_image(image_nodule))
+                            self.diagnostics.append(label)
+
             elif image_nodule.shape != (self.num_slices, 64, 64):
                 print(
                     f'[ERROR] {nodule_path.name} has shape {image_nodule.shape}, but expected shape is: ({self.num_slices}, 64, 64)')
-
-    def should_augment(self, label):
-        if label == 1:
-            # Apply augmentation with probability 1 for label 1
-            return True
-        elif label == 0:
-            # Apply augmentation with probability self.augmentation_prob for label 0
-            return random.random() < self.augmentation_prob
-        else:
-            return False
 
 
 # Define data augmentation function
