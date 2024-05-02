@@ -7,6 +7,7 @@ from matplotlib.ticker import PercentFormatter
 import os
 import pathlib
 from pathlib import Path
+from tqdm import tqdm
 
 import torch
 from torch.optim import Adam
@@ -23,13 +24,13 @@ def save_models(models, save_dir):
 		torch.save({"model_state_dict": m.state_dict()}, os.path.abspath(file_name))
 
 
-def load_models(save_dir):
+def load_models(save_dir, device):
 	models = []
 
 	for f in os.listdir(save_dir):
 		model = BayesianLidcNodulesNet(p_mc_dropout=None)
 		model.load_state_dict(torch.load(os.path.abspath(os.path.join(save_dir, f)))["model_state_dict"])
-		models.append(model)
+		models.append(model.to(device))
 
 	return models
 
@@ -101,10 +102,10 @@ class RunExperiment:
 
 		self.N = len(train)
 
-	def get_models(self):
+	def get_models(self, dropout=None):
 		if not self.train:
 			# Load models
-			self.models = load_models(self.save_dir)
+			self.models = load_models(self.save_dir, self.device)
 
 		else:
 
@@ -116,7 +117,7 @@ class RunExperiment:
 
 				# Initialize the model
 				model = BayesianLidcNodulesNet(
-					p_mc_dropout=None, # p_mc_dropout=None will disable MC-Dropout for this bnn, as we found out it makes learning much much slower.
+					p_mc_dropout=dropout, # p_mc_dropout=None will disable MC-Dropout for this bnn, as we found out it makes learning much much slower.
 				).to(self.device)
 				print(f'Model {i} device: ', self.device)
 				summary(model, input_size=(self.n_batch, 1, 6, 64, 64))
@@ -174,36 +175,72 @@ class RunExperiment:
 		model_correct = 0
 		# Iterate over the test dataset
 		nodule_id = 0
-		pred_prob_dict = {'correct': [], 'incorrect': []}
-		for images, labels in self.test_loader:
+		pred_mean_dict = {'correct': [], 'incorrect': []}
+		pred_prob_mean_dict = {'correct': [], 'incorrect': []}
+		pred_label_std_dict = {'correct': [], 'incorrect': []}
+		pred_prob_std_dict = {'correct': [], 'incorrect': []}
+		for images, labels in tqdm(self.test_loader):
 			images = images.to(self.device)
 			labels = labels.to(self.device)
 			nodule_id += 1
 			pred = 0
 			# Iterate over the models
+			pred_prob_list = []
+			pred_label_list = []
+			pred_prob_var_list = []
 			for model in self.models:
 				# Perform inference with the current model
 				with torch.no_grad():
-					pred += model(images)
-			avg_pred = pred / len(self.models)
-			# Get the index of the maximum predicted probability for each sample
-			pred_labels = torch.argmax(avg_pred, dim=1)
-			# Count how many predictions match the true labels
-			pred_correct = torch.sum(pred_labels == labels).item()
-			model_correct += pred_correct
+					model_pred = model(images)
 
-			# Compute prediction probability for all classes
-			prob = nnf.softmax(avg_pred, dim=1)
-			# Get probability for predicted class
-			top_p, _ = prob.topk(1, dim=1)
-			# Round up and convert to integer
-			top_p = int(round(float(top_p[0][0]) * 100, 0))
+					# Apply softmax to create range 0-100% probability for each class
+					pred_mean_prob = nnf.softmax(model_pred, dim=1)
+					# Get predicted label
+					_, top_c = pred_mean_prob.topk(1, dim=1)
+					# Save values in a dictionary
+					pred_prob_list.append(pred_mean_prob)
+					pred_label_list.append(top_c)
+			
+			# Stack the predictions a single tensor object with all the predictions (instead of a list of tensors)
+			pred_prob_tensor = torch.stack(pred_prob_list)
+			pred_label_tensor = torch.stack(pred_label_list).float()
+
+			# Compute the mean prediction probability across all models
+			pred_prob_tensor_mean = torch.mean(pred_prob_tensor, dim=0) # Get mean probability for each class
+			pred_prob, pred_label = pred_prob_tensor_mean.topk(1, dim=1) # Get the highest probability
+			pred_prob = int(round(float(pred_prob[0][0]) * 100, 0)) # Round it up and convert to integer
+
+			#pred_label = torch.mean(pred_label_tensor) # TODO: test model accuracy diference with this method
+
+			#########
+			# Prediction probability variance
+   			#########
+	  		# Compute the variance
+			pred_prob_std = torch.std(pred_prob_tensor*100, dim=0)
+			# Get the varaince of the predicted class only
+			pred_prob_std = torch.mean(pred_prob_std)
+
+			#########
+			# Prediction label variance
+   			#########
+			# Compute the variance
+			pred_label_std = torch.std(pred_label_tensor, dim=0)
+			
+			# Count how many predictions match the true labels
+			pred_correct = torch.sum(pred_label == labels).item()
+			model_correct += pred_correct
 
 			# Compute average probability for correct and incorrect predictions
 			if bool(pred_correct):
-				pred_prob_dict['correct'].append(top_p)
+				pred_mean_dict['correct'].append(pred_label)
+				pred_prob_mean_dict['correct'].append(pred_prob)
+				pred_label_std_dict['correct'].append(pred_label_std.item())
+				pred_prob_std_dict['correct'].append(pred_prob_std.item())
 			else:
-				pred_prob_dict['incorrect'].append(top_p)
+				pred_mean_dict['incorrect'].append(pred_label)
+				pred_prob_mean_dict['incorrect'].append(pred_prob)
+				pred_label_std_dict['incorrect'].append(pred_label_std.item())
+				pred_prob_std_dict['incorrect'].append(pred_prob_std.item())
 
 		# Calculate the accuracy as the total correct predictions divided by the total number of samples
 		accuracy = model_correct / len(self.test_loader.dataset)
@@ -213,43 +250,40 @@ class RunExperiment:
 		# Plot prediction probability distribution
 		vw.plot_pred_dist(
 			filename=f'pred_prob_dist_model_ensemble.png',
-			pred_prob_dict=pred_prob_dict,
-			model_accuracy=accuracy * 100,
+			pred_prob_dict=pred_prob_mean_dict,
 		)
 
-		"""
-		vw = View(output_dir)
-		with torch.no_grad():
+		vw.plot_pred_dist(
+			filename=f'pred_prob_std_model_ensemble.png',
+			pred_prob_dict=pred_prob_std_dict,
+			bins=np.linspace(0, 50, 10),
+			model_acc=False,
+		)
 
-			samples = torch.zeros((self.n_runtests, self.test_loader.batch_size, 2))
+		# Plot prediction probability distribution
+		vw.plot_pred_dist(
+			filename=f'pred_label_std_model_ensemble.png',
+			pred_prob_dict=pred_label_std_dict,
+			bins=np.linspace(0, 1, 10),
+			model_acc=False,
+		)
+		vw.plot_scatter(
+			filename=f'pred_prob_std_vs_mean_model_ensemble.png', 
+			dict_mean=pred_prob_mean_dict, 
+			dict_std=pred_prob_std_dict,
+		)
 
-			images, labels = next(iter(self.test_loader))
-			images = images.to(self.device)
-			labels = labels.to(self.device)
+		print(f'Mean correct prediction probability: {np.mean(pred_prob_mean_dict["correct"])} %')
+		print(f'Mean incorrect prediction probability: {np.mean(pred_prob_mean_dict["incorrect"])} %')
 
-			for i in np.arange(self.n_runtests):
-				print("\r", "\tTest run {}/{}".format(i + 1, self.n_runtests), end="")
-				model = np.random.randint(self.num_networks)
-				model = self.models[model]
+		print(f'Mean correct prediction probability std dev: {np.mean(pred_prob_std_dict["correct"])} %')
+		print(f'Mean incorrect prediction probability std dev: {np.mean(pred_prob_std_dict["incorrect"])} %')
 
-				pred = model(images)
-				pred_exp = torch.exp(pred)
-				samples[i, :, :] = pred_exp
+		print(f'Mean correct prediction label std dev: {np.mean(pred_label_std_dict["correct"])} %')
+		print(f'Mean incorrect prediction label std dev: {np.mean(pred_label_std_dict["incorrect"])} %')
 
-			withinSampleMean = torch.mean(samples, dim=0)
-			samplesMean = torch.mean(samples, dim=(0, 1))
+		print('Done')
 
-			withinSampleStd = torch.sqrt(torch.mean(torch.var(samples, dim=0), dim=0))
-			acrossSamplesStd = torch.std(withinSampleMean, dim=0)
-
-			print("\n\nClass prediction analysis:")
-			print("\tMean class probabilities:")
-			print(samplesMean)
-			print("\tPrediction standard deviation per sample:")
-			print(withinSampleStd)
-			print("\tPrediction standard deviation across samples:")
-			print(acrossSamplesStd)
-		"""
 
 	def test_models_individually(self, output_dir, model_id=None):
 		# Initialize view class for visualizations generation
@@ -267,7 +301,7 @@ class RunExperiment:
 				# Iterate over the test dataset
 				nodule_id = 0
 				pred_prob_dict = {'correct': [], 'incorrect': []}
-				for images, labels in self.test_loader:
+				for images, labels in tqdm(self.test_loader):
 					images = images.to(self.device)
 					labels = labels.to(self.device)
 					nodule_id += 1
@@ -353,10 +387,17 @@ class View:
 		plt.savefig(gradcam_dict / filename, bbox_inches='tight')
 		plt.close()
 
-	def plot_pred_dist(self, filename, pred_prob_dict, model_accuracy=None):
+	def plot_pred_dist(self, filename, pred_prob_dict, bins = np.linspace(50, 100, 10), model_acc=True):
+		"""Plot prediction metrics distribution on a histogram
+
+		Args:
+			filename (pathlib.Path): filename of the graph image to be generated.
+			pred_prob_dict (dict): {'correct':[], 'incorrect':[]}
+			bins (numpy.linspace, optional): define histogram plot bins. Defaults to np.linspace(50, 100, 10).
+			model_acc (bool, optional): True if model accuracy to be added to the plot. Defaults to True.
+		"""
 		plt.figure(figsize=(40, 15))
 		# Plot probability histogram
-		bins = np.linspace(50, 100, 50)
 
 		# Correct predictions probability distribution
 		plt.hist(
@@ -380,8 +421,8 @@ class View:
 		plt.axvline(x=np.mean(pred_prob_dict['correct']), color='g', label='Correct predictions - mean probability')
 		# Add incorrect predictions mean probability
 		plt.axvline(x=np.mean(pred_prob_dict['incorrect']), color='r', label='Incorrect predictions - mean probability')
-		if model_accuracy is not None:
-			plt.axvline(x=model_accuracy, color='b', label='Model accuracy')
+		if model_acc:
+			plt.axvline(x=self.get_model_accuracy(pred_prob_dict), color='b', label='Model accuracy')
 		# Format y axis as a percentage (example: from 0.8 to 80%)
 		plt.gca().yaxis.set_major_formatter(PercentFormatter(1))
 		# Add legend
@@ -390,22 +431,75 @@ class View:
 		plt.xlabel('Prediction probability (%)')
 		plt.ylabel('Distribution')
 		plt.savefig(self.output_dir / filename, bbox_inches='tight')
+	
+	def plot_scatter(self, filename, dict_mean, dict_std):
+		def polyfit(x, y):
+			a, b, c, d = np.polyfit(x, y, 3)
+			fit_equation = lambda x: a*x**3 + b*x**2 + c*x + d
+			x_fit = np.linspace(min(x), max(x), 1000)
+			y_fit = fit_equation(x_fit)
+			
+			return x_fit, y_fit
+
+		# Extract x and y coordinates from dictionaries
+		x_correct = dict_mean['correct']
+		y_correct = dict_std['correct']
+			
+		# Create scatter plot
+		plt.figure(figsize=(10, 10))
+		plt.scatter(x_correct, y_correct, alpha=0.8, c='lightgreen', label='Correct')
+
+		# Add polyfit line
+		x_fit, y_fit = polyfit(x_correct, y_correct)
+		plt.plot(x_fit, y_fit, color='g', label='Correct - 3rd order polyfit')
+		
+		# Set axis range (Xmin, Xmax, Ymin, Ymax)
+		plt.axis([50, 100, 0, 50])
+		
+		# Extract x and y coordinates from dictionaries
+		x_incorrect = dict_mean['incorrect']
+		y_incorrect = dict_std['incorrect']
+		
+		# Create scatter plot
+		plt.scatter(x_incorrect, y_incorrect, alpha=0.8, c='lightcoral', label='Incorrect')
+		
+		# Add polyfit line
+		x_fit, y_fit = polyfit(x_incorrect, y_incorrect)
+		plt.plot(x_fit, y_fit, color='r',label='Incorrect - 3rd order polyfit')
+		
+		# Add labels and legend
+		plt.xlabel('Prediction probability - mean')
+		plt.ylabel('Prediction probability - standard deviation')
+		plt.legend()
+
+		plt.savefig(self.output_dir / filename, bbox_inches='tight')
+
+	@staticmethod
+	def get_model_accuracy(pred_dict):
+		num_pred_co = len(pred_dict['correct'])
+		num_pred_in = len(pred_dict['incorrect'])
+		return (num_pred_co / (num_pred_co + num_pred_in)) * 100
 
 
 if __name__ == '__main__':
+	#data_dir = Path('F:\\master\\random_data\\50K_sample_1k_repeated_slices')
+	#data_dir = Path('F:\\master\\random_data\\50K_sample_1k_unique_slices')
 	data_dir = Path('F:\\master\\manifest-1600709154662\\nodules_16slices')
-	output_dir = Path('F:\\master\\manifest-1600709154662\\nodules_6_slices_gradcam_bayesian')
+	output_dir = Path('F:\\master\\manifest-1600709154662\\output_bayesian')
+	models_dir = Path('C:\\Users\\pau_a\\Documents\\Python_scripts\\bayesian_convolutional_neural_network\\lidc\\bayesian\\')
+
+
 
 	exp = RunExperiment(
-		train=True,
+		train=False,
 		n_batch=1,
-		save_dir=output_dir / 'models_w_augmentation',
+		save_dir=models_dir / 'models_w_augmentation',
 	)
 	exp.load_data(data_dir)
-	exp.get_models()
+	exp.get_models(dropout=None)
 
-	exp.test_model_ensemble(output_dir=output_dir)
-	exp.test_models_individually(
+	exp.test_model_ensemble(output_dir=output_dir / 'wo_dropout' / 'lidc_dataset')
+	""" exp.test_models_individually(
 		output_dir=output_dir,
-		model_id=None,
-	)
+		model_id=None, # Test all models
+	) """

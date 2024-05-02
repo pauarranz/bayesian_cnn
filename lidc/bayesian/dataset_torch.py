@@ -8,6 +8,7 @@ from scipy.ndimage import rotate
 import random
 import matplotlib.pyplot as plt
 from collections import Counter
+from tqdm import tqdm
 
 
 class LidcNoduleDataset(Dataset):
@@ -34,8 +35,9 @@ class LidcNoduleDataset(Dataset):
         return image, diag
 
     def load_data(self):
+        print('Loading LIDC dataset nodules')
         nodules_path = list(self.lidc_path.iterdir())
-        for nodule_path in nodules_path:
+        for nodule_path in tqdm(nodules_path):
             # Create label
             diag = int(nodule_path.name.split('_')[5])
             # Simplify label

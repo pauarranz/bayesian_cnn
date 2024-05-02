@@ -1,5 +1,8 @@
+"""This code is a modification of the code present in the below repository:
+    Apostolopoulos, I. (2020). LIDC-IDRI-Extract-64x64x16-nodules. Github. https://github.com/apjohndim/LIDC-IDRI-Extract-64x64x16-nodules
+"""
 import numpy as np
-import pylidc as pl  # !!!!!!!!!!!!! YOU NEED TO INSTALL IT; pip install pylidc
+import pylidc as pl  # pip install pylidc
 from PIL import Image
 from pathlib import Path
 import shutil
