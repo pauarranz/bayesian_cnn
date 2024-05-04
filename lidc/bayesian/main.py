@@ -117,12 +117,15 @@ class RunExperiment:
 
 				# Initialize the model
 				model = BayesianLidcNodulesNet(
-					p_mc_dropout=dropout, # p_mc_dropout=None will disable MC-Dropout for this bnn, as we found out it makes learning much much slower.
+					mc_dropout=dropout, # mc_dropout=False will disable MC-Dropout for this bnn, as we found out it makes learning much much slower.
 				).to(self.device)
 				print(f'Model {i} device: ', self.device)
+				# Provide model summary
 				summary(model, input_size=(self.n_batch, 1, 6, 64, 64))
-				loss = torch.nn.NLLLoss(reduction='mean')  # negative log likelihood will be part of the ELBO
 
+				# Loss
+				loss = torch.nn.NLLLoss(reduction='mean')  # negative log likelihood will be part of the ELBO
+				# Optimizer
 				optimizer = Adam(model.parameters(), lr=self.learning_rate)
 				optimizer.zero_grad()
 
@@ -187,7 +190,6 @@ class RunExperiment:
 			# Iterate over the models
 			pred_prob_list = []
 			pred_label_list = []
-			pred_prob_var_list = []
 			for model in self.models:
 				# Perform inference with the current model
 				with torch.no_grad():
@@ -208,9 +210,7 @@ class RunExperiment:
 			# Compute the mean prediction probability across all models
 			pred_prob_tensor_mean = torch.mean(pred_prob_tensor, dim=0) # Get mean probability for each class
 			pred_prob, pred_label = pred_prob_tensor_mean.topk(1, dim=1) # Get the highest probability
-			pred_prob = int(round(float(pred_prob[0][0]) * 100, 0)) # Round it up and convert to integer
-
-			#pred_label = torch.mean(pred_label_tensor) # TODO: test model accuracy diference with this method
+			pred_prob_list = [int(round(float(i[0].item()) * 100, 0)) for i in pred_prob] # Round it up and convert to integer
 
 			#########
 			# Prediction probability variance
@@ -218,7 +218,7 @@ class RunExperiment:
 	  		# Compute the variance
 			pred_prob_std = torch.std(pred_prob_tensor*100, dim=0)
 			# Get the varaince of the predicted class only
-			pred_prob_std = torch.mean(pred_prob_std)
+			pred_prob_std = torch.mean(pred_prob_std, dim=1)
 
 			#########
 			# Prediction label variance
@@ -227,20 +227,28 @@ class RunExperiment:
 			pred_label_std = torch.std(pred_label_tensor, dim=0)
 			
 			# Count how many predictions match the true labels
-			pred_correct = torch.sum(pred_label == labels).item()
-			model_correct += pred_correct
+			pred_label = torch.stack([i[0] for i in pred_label]) # convert list of tensors to tensor
+			pred_correct_list = (pred_label == labels)
+			pred_correct_sum = torch.sum(pred_correct_list).item() # Count number of correct predictions
+			model_correct += pred_correct_sum
 
 			# Compute average probability for correct and incorrect predictions
-			if bool(pred_correct):
-				pred_mean_dict['correct'].append(pred_label)
-				pred_prob_mean_dict['correct'].append(pred_prob)
-				pred_label_std_dict['correct'].append(pred_label_std.item())
-				pred_prob_std_dict['correct'].append(pred_prob_std.item())
-			else:
-				pred_mean_dict['incorrect'].append(pred_label)
-				pred_prob_mean_dict['incorrect'].append(pred_prob)
-				pred_label_std_dict['incorrect'].append(pred_label_std.item())
-				pred_prob_std_dict['incorrect'].append(pred_prob_std.item())
+			pred_correct_list = pred_correct_list.tolist()
+			pred_label_list = pred_label.tolist()
+			pred_label_std_list = [i[0] for i in pred_label_std.tolist()]
+			pred_prob_std_list = pred_prob_std.tolist()
+			for pred_correct, pred_label, pred_prob, pred_label_std, pred_prob_std in zip(pred_correct_list, pred_label_list, pred_prob_list, pred_label_std_list, pred_prob_std_list):
+				if bool(pred_correct):
+					pred_mean_dict['correct'].append(pred_label)
+					pred_prob_mean_dict['correct'].append(pred_prob)
+					pred_label_std_dict['correct'].append(pred_label_std)
+					pred_prob_std_dict['correct'].append(pred_prob_std)
+				
+				else:
+					pred_mean_dict['incorrect'].append(pred_label)
+					pred_prob_mean_dict['incorrect'].append(pred_prob)
+					pred_label_std_dict['incorrect'].append(pred_label_std)
+					pred_prob_std_dict['incorrect'].append(pred_prob_std)
 
 		# Calculate the accuracy as the total correct predictions divided by the total number of samples
 		accuracy = model_correct / len(self.test_loader.dataset)
@@ -396,7 +404,7 @@ class View:
 			bins (numpy.linspace, optional): define histogram plot bins. Defaults to np.linspace(50, 100, 10).
 			model_acc (bool, optional): True if model accuracy to be added to the plot. Defaults to True.
 		"""
-		plt.figure(figsize=(40, 15))
+		plt.figure(figsize=(15, 5))
 		# Plot probability histogram
 
 		# Correct predictions probability distribution
@@ -418,16 +426,19 @@ class View:
 			color='r',
 		)
 		# Add correct predictions mean probability
-		plt.axvline(x=np.mean(pred_prob_dict['correct']), color='g', label='Correct predictions - mean probability')
+		mean_prob_co = np.mean(pred_prob_dict['correct'])
+		plt.axvline(x=np.mean(pred_prob_dict['correct']), color='g', label=f'Correct predictions - mean probability - {round(mean_prob_co, 2)}%')
 		# Add incorrect predictions mean probability
-		plt.axvline(x=np.mean(pred_prob_dict['incorrect']), color='r', label='Incorrect predictions - mean probability')
+		mean_prob_inco = np.mean(pred_prob_dict['incorrect'])
+		plt.axvline(x=mean_prob_inco, color='r', label=f'Incorrect predictions - mean probability - {round(mean_prob_inco, 2)}%')
 		if model_acc:
-			plt.axvline(x=self.get_model_accuracy(pred_prob_dict), color='b', label='Model accuracy')
+			plt.axvline(x=self.get_model_accuracy(pred_prob_dict), color='b', label=f'Model accuracy - {round(self.get_model_accuracy(pred_prob_dict), 2)}%')
 		# Format y axis as a percentage (example: from 0.8 to 80%)
 		plt.gca().yaxis.set_major_formatter(PercentFormatter(1))
+
 		# Add legend
 		plt.legend(loc='upper right')
-		plt.title('Prediction probability distribution')
+		plt.title(filename.replace('_', ' ').replace('.png', ' ').replace('std', 'std deviation'))
 		plt.xlabel('Prediction probability (%)')
 		plt.ylabel('Distribution')
 		plt.savefig(self.output_dir / filename, bbox_inches='tight')
@@ -481,25 +492,39 @@ class View:
 		return (num_pred_co / (num_pred_co + num_pred_in)) * 100
 
 
-if __name__ == '__main__':
-	#data_dir = Path('F:\\master\\random_data\\50K_sample_1k_repeated_slices')
+def LeNet3d_VI():
 	#data_dir = Path('F:\\master\\random_data\\50K_sample_1k_unique_slices')
-	data_dir = Path('F:\\master\\manifest-1600709154662\\nodules_16slices')
-	output_dir = Path('F:\\master\\manifest-1600709154662\\output_bayesian')
-	models_dir = Path('C:\\Users\\pau_a\\Documents\\Python_scripts\\bayesian_convolutional_neural_network\\lidc\\bayesian\\')
-
-
+	data_dir = Path('F:\\master\\LIDC\\nodules_16slices')
+	output_dir = Path('F:\\master\\LIDC\\output_bayesian')
+	models_dir = Path('C:\\Users\\pau_a\\Documents\\Python_scripts\\bayesian_convolutional_neural_network\\lidc\\bayesian\\models')
 
 	exp = RunExperiment(
-		train=False,
-		n_batch=1,
-		save_dir=models_dir / 'models_w_augmentation',
+		train=True,
+		n_batch=64,
+		save_dir=models_dir / '20240504_LeNet3D_v2',
+		num_networks=10,
 	)
 	exp.load_data(data_dir)
-	exp.get_models(dropout=None)
+	exp.get_models(dropout=False)
 
-	exp.test_model_ensemble(output_dir=output_dir / 'wo_dropout' / 'lidc_dataset')
-	""" exp.test_models_individually(
-		output_dir=output_dir,
-		model_id=None, # Test all models
-	) """
+	exp.test_model_ensemble(output_dir=output_dir / 'wo_dropout' / '20240503_LeNet3D_eval_w_eval_dataset_only')
+
+def LeNet3d_VI_dropout():
+	#data_dir = Path('F:\\master\\random_data\\50K_sample_1k_unique_slices')
+	data_dir = Path('F:\\master\\LIDC\\nodules_16slices')
+	output_dir = Path('F:\\master\\LIDC\\output_bayesian')
+	models_dir = Path('C:\\Users\\pau_a\\Documents\\Python_scripts\\bayesian_convolutional_neural_network\\lidc\\bayesian\\models')
+
+	exp = RunExperiment(
+		train=True,
+		n_batch=64,
+		save_dir=models_dir / '20240504_LeNet3D_dropout',
+		num_networks=10,
+	)
+	exp.load_data(data_dir)
+	exp.get_models(dropout=True)
+
+	exp.test_model_ensemble(output_dir=output_dir / 'w_dropout' / '20240504_LeNet3D_dropout' / 'lidc')
+
+if __name__ == '__main__':
+	LeNet3d_VI()

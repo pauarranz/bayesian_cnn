@@ -235,58 +235,91 @@ class BayesianLidcNodulesNet(VIModule):
 			convBPriorSigma=5.,
 			linearWPriorSigma=1.,
 			linearBPriorSigma=5.,
-			p_mc_dropout=0.5
+			mc_dropout=False
 	):
+		"""Initialize all layers from the architecture
+
+		Args:
+			convWPriorSigma (float, optional): _description_. Defaults to 1..
+			convBPriorSigma (float, optional): _description_. Defaults to 5..
+			linearWPriorSigma (float, optional): _description_. Defaults to 1..
+			linearBPriorSigma (float, optional): _description_. Defaults to 5..
+			p_mc_dropout (float, optional): _description_. Defaults to 0.5.
+		"""
 		
 		super().__init__()
 		
-		self.p_mc_dropout = p_mc_dropout
+		self.mc_dropout = mc_dropout
 
+		# 1st convolution layer
 		self.conv1 = MeanFieldGaussian3DConvolution(
-			1,  # Since it's 3D
-			16,
+			in_channels=1,
+			out_channels=6,
 			wPriorSigma=convWPriorSigma,
 			bPriorSigma=convBPriorSigma,
-			kernel_size=(1, 5, 5),
+			kernel_size=(2, 5, 5),
 			initPriorSigmaScale=1e-7)
+		# 2nd convolution layer
 		self.conv2 = MeanFieldGaussian3DConvolution(
-			16,
-			32,
+			in_channels=6,
+			out_channels=16,
 			wPriorSigma=convWPriorSigma,
 			bPriorSigma=convBPriorSigma,
 			kernel_size=(1, 5, 5),
 			initPriorSigmaScale=1e-7)
+		# 1st dense layer
 		self.linear1 = MeanFieldGaussianFeedForward(
-			5408,
-			676,
+			in_features=2704,
+			out_features=120,
 			weightPriorSigma=linearWPriorSigma,
 			biasPriorSigma=linearBPriorSigma,
 			initPriorSigmaScale=1e-7)
+		# 2nd dense layer
 		self.linear2 = MeanFieldGaussianFeedForward(
-			676,
-			2,  # The number of classes to predict
+			in_features=120,
+			out_features=84,  # The number of classes to predict
+			weightPriorSigma=linearWPriorSigma,
+			biasPriorSigma=linearBPriorSigma,
+			initPriorSigmaScale=1e-7)
+		# 3rd dense layer
+		self.linear3 = MeanFieldGaussianFeedForward(
+			in_features=84,
+			out_features=2,  # The number of classes to predict
 			weightPriorSigma=linearWPriorSigma,
 			biasPriorSigma=linearBPriorSigma,
 			initPriorSigmaScale=1e-7)
 
 	def forward(self, x, stochastic=True):
 		
-		x = nn.functional.relu(nn.functional.max_pool3d(self.conv1(x, stochastic=stochastic), 2))
+		# 1st convolution
+		x = self.conv1(x, stochastic=stochastic)
+		# MC-Dropout
+		if self.mc_dropout:
+			x = nn.functional.dropout3d(x, p=0.5, training=stochastic)
+  		# Max pooling 3D
+		x = nn.functional.relu(nn.functional.max_pool3d(input=x, kernel_size=2, stride=2))
+
+		# 2nd convolution
 		x = self.conv2(x, stochastic=stochastic)
+		# Max pooling 3D
+		x = nn.functional.relu(nn.functional.max_pool3d(input=x, kernel_size=2, stride=2))
+		# MC-Dropout
+		if self.mc_dropout:
+			x = nn.functional.dropout3d(x, p=0.5, training=stochastic)
 		
-		if self.p_mc_dropout is not None:
-			x = nn.functional.dropout3d(x, p=self.p_mc_dropout, training=stochastic)  # MC-Dropout
-		
-		x = nn.functional.relu(nn.functional.max_pool3d(x, 2))
-		
-		# Get batch size
-		batch_size = x.shape[0]
-		# Reshape data to have one array for each image
-		x = x.view(batch_size, -1)
+		# Flatten output
+		batch_size = x.shape[0] # Get batch size
+		x = x.view(batch_size, -1) # Reshape data to have one array for each image
+
+		# 1st dense layer
 		x = nn.functional.relu(self.linear1(x, stochastic=stochastic))
 		
-		if self.p_mc_dropout is not None:
-			x = nn.functional.dropout(x, p=self.p_mc_dropout, training=stochastic)  # MC-Dropout
-		
-		x = self.linear2(x, stochastic=stochastic)
-		return nn.functional.log_softmax(x, dim=-1)
+		# 2nd dense layer
+		x = nn.functional.relu(self.linear2(x, stochastic=stochastic))
+
+		# 3rd dense layer
+		x = self.linear3(x, stochastic=stochastic)
+		# Softmax
+		x = nn.functional.log_softmax(x, dim=-1)
+
+		return x

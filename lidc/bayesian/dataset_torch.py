@@ -130,7 +130,7 @@ def plot_slices(num_rows, num_columns, width, height, data):
 
 if __name__ == '__main__':
     # Example usage
-    lidc_path = Path('F:\\master\\manifest-1600709154662\\nodules_16slices')
+    lidc_path = Path('F:\\master\\LIDC\\nodules_16slices')
     num_slices = 6
 
     # Create dataset instance with augmentation
