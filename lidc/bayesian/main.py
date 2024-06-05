@@ -8,6 +8,7 @@ import os
 import pathlib
 from pathlib import Path
 from tqdm import tqdm
+from datetime import datetime
 
 import torch
 from torch.optim import Adam
@@ -24,11 +25,11 @@ def save_models(models, save_dir):
 		torch.save({"model_state_dict": m.state_dict()}, os.path.abspath(file_name))
 
 
-def load_models(save_dir, device):
+def load_models(save_dir, device, mc_dropout):
 	models = []
 
 	for f in os.listdir(save_dir):
-		model = BayesianLidcNodulesNet(p_mc_dropout=None)
+		model = BayesianLidcNodulesNet(mc_dropout=mc_dropout)
 		model.load_state_dict(torch.load(os.path.abspath(os.path.join(save_dir, f)))["model_state_dict"])
 		models.append(model.to(device))
 
@@ -77,7 +78,7 @@ class RunExperiment:
 		self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 		print("Device in use:", self.device)
 
-	def load_data(self, data_dir: pathlib.Path):
+	def load_data(self, data_dir: pathlib.Path, test_val_split=[0.7, 0.3], augment=True):
 		"""
 
 		:param data_dir: Directory where the data is saved.
@@ -89,12 +90,16 @@ class RunExperiment:
 			data_dir,
 			num_slices=6,
 			transform=ToTensorWithOriginalShape(),
-			augment=True,
+			augment=augment,
 			filter_label=self.filtered_class,
 		)
 		print(f'Data shape: {np.array(dataset[0][0]).shape}')
 		# Divide between train and test dataset
-		train, test = torch.utils.data.random_split(dataset, lengths=[0.7, 0.3])
+		train, test = torch.utils.data.random_split(
+			dataset, 
+			lengths=test_val_split,
+			generator=torch.Generator().manual_seed(42), # Make the experiments and results repreatable
+			)
 
 		# Create iterable from the dataset to apply to the model
 		self.train_loader = torch.utils.data.DataLoader(train, batch_size=self.n_batch)
@@ -102,17 +107,17 @@ class RunExperiment:
 
 		self.N = len(train)
 
-	def get_models(self, dropout=None):
+	def get_models(self, dropout=False):
 		if not self.train:
 			# Load models
-			self.models = load_models(self.save_dir, self.device)
+			self.models = load_models(self.save_dir, self.device, dropout)
 
 		else:
 
 			# Train models
 			batch_len = len(self.train_loader)
 			digits_batch_len = len(str(batch_len))
-			for i in np.arange(self.num_networks):
+			for i in range(self.num_networks):
 				print("Training model {}/{}:".format(i, self.num_networks))
 
 				# Initialize the model
@@ -169,7 +174,7 @@ class RunExperiment:
 			if self.save_dir is not None:
 				save_models(self.models, self.save_dir)
 
-	def test_model_ensemble(self, output_dir):
+	def test_model_ensemble(self, output_dir, graphs_w_jdg=True, graphs_wo_jdg=True):
 		print('Model ensemble - evaluation started')
 		# Initialize view class for visualizations generation
 		vw = View(output_dir)
@@ -190,10 +195,167 @@ class RunExperiment:
 			# Iterate over the models
 			pred_prob_list = []
 			pred_label_list = []
-			for model in self.models:
+			#for model in self.models:
+			for _ in range(0, self.n_runtests):
+				# Select a model
+				model_id = np.random.randint(len(self.models))
+				model = self.models[model_id]
 				# Perform inference with the current model
 				with torch.no_grad():
-					model_pred = model(images)
+					model_pred = model(images, stochastic=True)
+
+					# Apply softmax to create range 0-100% probability for each class
+					pred_mean_prob = nnf.softmax(model_pred, dim=1)
+					# Get predicted label
+					_, top_c = pred_mean_prob.topk(1, dim=1)
+					# Save values in a dictionary
+					pred_prob_list.append(pred_mean_prob)
+					pred_label_list.append(top_c)
+			
+			# Stack the predictions a single tensor object with all the predictions (instead of a list of tensors)
+			pred_prob_tensor = torch.stack(pred_prob_list)
+			pred_label_tensor = torch.stack(pred_label_list).float()
+
+			# Compute the mean prediction probability across all models
+			pred_prob_tensor_mean = torch.mean(pred_prob_tensor, dim=0) # Get mean probability for each class
+			pred_prob, pred_label = pred_prob_tensor_mean.topk(1, dim=1) # Get the highest probability
+			pred_prob_list = [int(round(float(i[0].item()) * 100, 0)) for i in pred_prob] # Round it up and convert to integer
+
+			#########
+			# Prediction probability variance
+   			#########
+	  		# Compute the variance
+			pred_prob_std = torch.std(pred_prob_tensor*100, dim=0)
+			# Get the varaince of the predicted class only
+			pred_prob_std = torch.mean(pred_prob_std, dim=1)
+
+			#########
+			# Prediction label variance
+   			#########
+			# Compute the variance
+			pred_label_std = torch.std(pred_label_tensor, dim=0)
+			
+			# Count how many predictions match the true labels
+			pred_label = torch.stack([i[0] for i in pred_label]) # convert list of tensors to tensor
+			pred_correct_list = (pred_label == labels)
+			pred_correct_sum = torch.sum(pred_correct_list).item() # Count number of correct predictions
+			model_correct += pred_correct_sum
+
+			# Compute average probability for correct and incorrect predictions
+			pred_correct_list = pred_correct_list.tolist()
+			pred_label_list = pred_label.tolist()
+			pred_label_std_list = [i[0] for i in pred_label_std.tolist()]
+			pred_prob_std_list = pred_prob_std.tolist()
+			for pred_correct, pred_label, pred_prob, pred_label_std, pred_prob_std in zip(pred_correct_list, pred_label_list, pred_prob_list, pred_label_std_list, pred_prob_std_list):
+				if bool(pred_correct):
+					pred_mean_dict['correct'].append(pred_label)
+					pred_prob_mean_dict['correct'].append(pred_prob)
+					pred_label_std_dict['correct'].append(pred_label_std)
+					pred_prob_std_dict['correct'].append(pred_prob_std)
+				
+				else:
+					pred_mean_dict['incorrect'].append(pred_label)
+					pred_prob_mean_dict['incorrect'].append(pred_prob)
+					pred_label_std_dict['incorrect'].append(pred_label_std)
+					pred_prob_std_dict['incorrect'].append(pred_prob_std)
+
+		# Calculate the accuracy as the total correct predictions divided by the total number of samples
+		accuracy = model_correct / len(self.test_loader.dataset)
+
+		print(f"Model ensemble, accuracy: {accuracy * 100:.2f}%")
+
+		#####
+		# Plots that divide correct and incorrect predictions
+		#####
+		if graphs_w_jdg:
+			# Plot prediction probability mean distribution
+			vw.plot_pred_dist_by_jdg(
+				filename=f'pred_prob_dist_model_ensemble_by_judgement.png',
+				pred_prob_dict=pred_prob_mean_dict,
+			)
+			# Plot prediction probability standard deviation distribution
+			vw.plot_pred_dist_by_jdg(
+				filename=f'pred_prob_std_model_ensemble_by_judgement.png',
+				pred_prob_dict=pred_prob_std_dict,
+				bins=np.linspace(0, 100, 20),
+				model_acc=False,
+			)
+			# Plot prediction label standard deviation distribution
+			vw.plot_pred_dist_by_jdg(
+				filename=f'pred_label_std_model_ensemble_by_judgement.png',
+				pred_prob_dict=pred_label_std_dict,
+				bins=np.linspace(0, 1, 10),
+				model_acc=False,
+			)
+			vw.plot_scatter(
+				filename=f'pred_prob_std_vs_mean_model_ensemble_by_judgement.png', 
+				dict_mean=pred_prob_mean_dict, 
+				dict_std=pred_prob_std_dict,
+			)
+
+		#####
+		# Plots that combine correct and incorrect predictions
+		#####
+		if graphs_wo_jdg:
+			# Plot prediction probability mean distribution
+			vw.plot_pred_dist(
+				filename=f'pred_prob_dist_model_ensemble.png',
+				pred_prob_dict=pred_prob_mean_dict,
+			)
+			# Plot prediction probability standard deviation distribution
+			vw.plot_pred_dist(
+				filename=f'pred_prob_std_model_ensemble.png',
+				pred_prob_dict=pred_prob_std_dict,
+				bins=np.linspace(0, 100, 20),
+				model_acc=False,
+			)
+			# Plot prediction label standard deviation distribution
+			vw.plot_pred_dist(
+				filename=f'pred_label_std_model_ensemble.png',
+				pred_prob_dict=pred_label_std_dict,
+				bins=np.linspace(0, 1, 10),
+				model_acc=False,
+			)
+
+		print(f'Mean correct prediction probability: {np.mean(pred_prob_mean_dict["correct"])} %')
+		print(f'Mean incorrect prediction probability: {np.mean(pred_prob_mean_dict["incorrect"])} %')
+
+		print(f'Mean correct prediction probability std dev: {np.mean(pred_prob_std_dict["correct"])} %')
+		print(f'Mean incorrect prediction probability std dev: {np.mean(pred_prob_std_dict["incorrect"])} %')
+
+		print(f'Mean correct prediction label std dev: {np.mean(pred_label_std_dict["correct"])} %')
+		print(f'Mean incorrect prediction label std dev: {np.mean(pred_label_std_dict["incorrect"])} %')
+
+		print('Done')
+
+	def test_individual_model(self, output_dir):
+		print('Model ensemble - evaluation started')
+		# Initialize view class for visualizations generation
+		vw = View(output_dir)
+
+		# Initialize a variable to keep track of the model correct predictions
+		model_correct = 0
+		# Iterate over the test dataset
+		nodule_id = 0
+		pred_mean_dict = {'correct': [], 'incorrect': []}
+		pred_prob_mean_dict = {'correct': [], 'incorrect': []}
+		pred_label_std_dict = {'correct': [], 'incorrect': []}
+		pred_prob_std_dict = {'correct': [], 'incorrect': []}
+		for images, labels in tqdm(self.test_loader):
+			images = images.to(self.device)
+			labels = labels.to(self.device)
+			nodule_id += 1
+			pred = 0
+			# Iterate over the models
+			pred_prob_list = []
+			pred_label_list = []
+			for _ in range(0, self.n_runtests):
+				# Select a model
+				model_id = np.random.randint(len(self.models))
+				model = self.models[model_id]
+				# Perform inference with the current model
+				with torch.no_grad():
+					model_pred = model(images, stochastic=True)
 
 					# Apply softmax to create range 0-100% probability for each class
 					pred_mean_prob = nnf.softmax(model_pred, dim=1)
@@ -256,20 +418,20 @@ class RunExperiment:
 		print(f"Model ensemble, accuracy: {accuracy * 100:.2f}%")
 
 		# Plot prediction probability distribution
-		vw.plot_pred_dist(
+		vw.plot_pred_dist_by_jdg(
 			filename=f'pred_prob_dist_model_ensemble.png',
 			pred_prob_dict=pred_prob_mean_dict,
 		)
 
-		vw.plot_pred_dist(
+		vw.plot_pred_dist_by_jdg(
 			filename=f'pred_prob_std_model_ensemble.png',
 			pred_prob_dict=pred_prob_std_dict,
-			bins=np.linspace(0, 50, 10),
+			bins=np.linspace(0, 100, 20),
 			model_acc=False,
 		)
 
 		# Plot prediction probability distribution
-		vw.plot_pred_dist(
+		vw.plot_pred_dist_by_jdg(
 			filename=f'pred_label_std_model_ensemble.png',
 			pred_prob_dict=pred_label_std_dict,
 			bins=np.linspace(0, 1, 10),
@@ -291,9 +453,6 @@ class RunExperiment:
 		print(f'Mean incorrect prediction label std dev: {np.mean(pred_label_std_dict["incorrect"])} %')
 
 		print('Done')
-
-
-	def test_models_individually(self, output_dir, model_id=None):
 		# Initialize view class for visualizations generation
 		vw = View(output_dir)
 		# Make that the model(s) computes and returns the gradcam
@@ -348,7 +507,7 @@ class RunExperiment:
 				print(f"Model {id}, accuracy: {accuracy * 100:.2f}%")
 
 				# Plot prediction probability distribution
-				vw.plot_pred_dist(
+				vw.plot_pred_dist_by_jdg(
 					filename=f'pred_prob_dist_model_{id}.png',
 					pred_prob_dict=pred_prob_dict,
 					model_accuracy=accuracy*100,
@@ -395,8 +554,8 @@ class View:
 		plt.savefig(gradcam_dict / filename, bbox_inches='tight')
 		plt.close()
 
-	def plot_pred_dist(self, filename, pred_prob_dict, bins = np.linspace(50, 100, 10), model_acc=True):
-		"""Plot prediction metrics distribution on a histogram
+	def plot_pred_dist_by_jdg(self, filename, pred_prob_dict, bins = np.linspace(50, 100, 10), model_acc=True):
+		"""Plot prediction metrics distribution on a histogram, divided by correct and incorrect predictions
 
 		Args:
 			filename (pathlib.Path): filename of the graph image to be generated.
@@ -427,10 +586,10 @@ class View:
 		)
 		# Add correct predictions mean probability
 		mean_prob_co = np.mean(pred_prob_dict['correct'])
-		plt.axvline(x=np.mean(pred_prob_dict['correct']), color='g', label=f'Correct predictions - mean probability - {round(mean_prob_co, 2)}%')
+		plt.axvline(x=np.mean(pred_prob_dict['correct']), color='g', label=f'Correct predictions - mean probability - {round(mean_prob_co, 4)}%')
 		# Add incorrect predictions mean probability
 		mean_prob_inco = np.mean(pred_prob_dict['incorrect'])
-		plt.axvline(x=mean_prob_inco, color='r', label=f'Incorrect predictions - mean probability - {round(mean_prob_inco, 2)}%')
+		plt.axvline(x=mean_prob_inco, color='r', label=f'Incorrect predictions - mean probability - {round(mean_prob_inco, 4)}%')
 		if model_acc:
 			plt.axvline(x=self.get_model_accuracy(pred_prob_dict), color='b', label=f'Model accuracy - {round(self.get_model_accuracy(pred_prob_dict), 2)}%')
 		# Format y axis as a percentage (example: from 0.8 to 80%)
@@ -443,6 +602,50 @@ class View:
 		plt.ylabel('Distribution')
 		plt.savefig(self.output_dir / filename, bbox_inches='tight')
 	
+	def plot_pred_dist(self, filename, pred_prob_dict, bins = np.linspace(50, 100, 10), model_acc=True):
+		"""Plot prediction metrics distribution on a histogram
+
+		Args:
+			filename (pathlib.Path): filename of the graph image to be generated.
+			pred_prob_dict (dict): {'correct':[], 'incorrect':[]}
+			bins (numpy.linspace, optional): define histogram plot bins. Defaults to np.linspace(50, 100, 10).
+			model_acc (bool, optional): True if model accuracy to be added to the plot. Defaults to True.
+		"""
+		
+		# Create one list with all predictions
+		pred_list = []
+		pred_list.extend(pred_prob_dict['correct'])
+		pred_list.extend(pred_prob_dict['incorrect'])
+		pred_list = np.array(pred_list)
+		
+		# All predictions probability distribution
+		plt.figure(figsize=(15, 5))
+		plt.hist(
+			pred_list,
+			bins,
+			weights=np.ones(len(pred_list)) / len(pred_list),
+			label='All predictions',
+			color='b',
+		)
+
+		# Add predictions mean probability
+		mean_prob = np.mean(pred_list)
+		plt.axvline(x=mean_prob, color='black', label=f'All predictions - mean probability - {round(mean_prob, 4)}%')
+		
+		if model_acc:
+			# Add model accuracy
+			plt.axvline(x=self.get_model_accuracy(pred_prob_dict), color='black', label=f'Model accuracy - {round(self.get_model_accuracy(pred_prob_dict), 2)}%')
+		
+		# Format y axis as a percentage (example: from 0.8 to 80%)
+		plt.gca().yaxis.set_major_formatter(PercentFormatter(1))
+
+		# Add legend
+		plt.legend(loc='upper right')
+		plt.title(filename.replace('_', ' ').replace('.png', ' ').replace('std', 'std deviation'))
+		plt.xlabel('Prediction probability (%)')
+		plt.ylabel('Distribution')
+		plt.savefig(self.output_dir / filename, bbox_inches='tight')
+
 	def plot_scatter(self, filename, dict_mean, dict_std):
 		def polyfit(x, y):
 			a, b, c, d = np.polyfit(x, y, 3)
@@ -457,7 +660,7 @@ class View:
 		y_correct = dict_std['correct']
 			
 		# Create scatter plot
-		plt.figure(figsize=(10, 10))
+		plt.figure(figsize=(10, 20))
 		plt.scatter(x_correct, y_correct, alpha=0.8, c='lightgreen', label='Correct')
 
 		# Add polyfit line
@@ -465,7 +668,7 @@ class View:
 		plt.plot(x_fit, y_fit, color='g', label='Correct - 3rd order polyfit')
 		
 		# Set axis range (Xmin, Xmax, Ymin, Ymax)
-		plt.axis([50, 100, 0, 50])
+		plt.axis([50, 100, 0, 100])
 		
 		# Extract x and y coordinates from dictionaries
 		x_incorrect = dict_mean['incorrect']
@@ -492,39 +695,134 @@ class View:
 		return (num_pred_co / (num_pred_co + num_pred_in)) * 100
 
 
-def LeNet3d_VI():
-	#data_dir = Path('F:\\master\\random_data\\50K_sample_1k_unique_slices')
-	data_dir = Path('F:\\master\\LIDC\\nodules_16slices')
-	output_dir = Path('F:\\master\\LIDC\\output_bayesian')
+def LeNet3d_VI(train=True, n_batch=64, num_networks=10, learning_rate=0.005, n_epochs=10, n_runtests=100, sub_folder_name=None):
+	data_dir_faces = Path('F:\\master\\random_data\\50K_sample_1k_unique_slices')
+	data_dir_lidc = Path('F:\\master\\LIDC\\nodules_16slices')
+	output_dir = Path('F:\\master\\output_bayesian\\test')
 	models_dir = Path('C:\\Users\\pau_a\\Documents\\Python_scripts\\bayesian_convolutional_neural_network\\lidc\\bayesian\\models')
 
+	if sub_folder_name is None:
+		# Format subfolder name
+		d = datetime.now().day
+		mo = datetime.now().month
+		y = datetime.now().year
+		h = datetime.now().hour
+		mi = datetime.now().minute
+		s = datetime.now().second
+		learning_rate_str = str(learning_rate).replace('.', '-')
+		sub_folder_name = f'{y:04}{mo:02}{d:02}_{h:02}{mi:02}{s:02}_LeNet3D_lr{learning_rate_str}_{n_epochs}epochs_{num_networks}models_{n_runtests}runtests'
+
+	model_dir = (models_dir / sub_folder_name)
+	model_dir.mkdir(parents=True, exist_ok=True)  # Create folder if not existing	
+
 	exp = RunExperiment(
-		train=True,
-		n_batch=64,
-		save_dir=models_dir / '20240504_LeNet3D_v2',
-		num_networks=10,
+		train=train,
+		n_batch=n_batch,
+		save_dir=model_dir,
+		num_networks=num_networks,
+		learning_rate=learning_rate,
+		n_epochs=n_epochs,
+		n_runtests=n_runtests,
 	)
-	exp.load_data(data_dir)
+	exp.load_data(data_dir_lidc)
 	exp.get_models(dropout=False)
 
-	exp.test_model_ensemble(output_dir=output_dir / 'wo_dropout' / '20240503_LeNet3D_eval_w_eval_dataset_only')
+	output_dir = output_dir / 'wo_dropout' / sub_folder_name
+	output_dir_lidc = output_dir / 'lidc'
+	output_dir_lidc.mkdir(parents=True, exist_ok=True)  # Create folder if not existing
+	exp.test_model_ensemble(output_dir=output_dir_lidc)
+	
+	exp.load_data(data_dir_faces, test_val_split=[0, 1], augment=False)
+	output_dir_faces = output_dir / 'celeba'
+	output_dir_faces.mkdir(parents=True, exist_ok=True)  # Create folder if not existing
+	exp.test_model_ensemble(output_dir=output_dir_faces)
 
-def LeNet3d_VI_dropout():
-	#data_dir = Path('F:\\master\\random_data\\50K_sample_1k_unique_slices')
-	data_dir = Path('F:\\master\\LIDC\\nodules_16slices')
-	output_dir = Path('F:\\master\\LIDC\\output_bayesian')
+
+def LeNet3d_VI_dropout(train=True, n_batch=64, num_networks=10, learning_rate=0.005, n_epochs=10, n_runtests=100, sub_folder_name=None):
+	data_dir_faces = Path('F:\\master\\random_data\\50K_sample_1k_unique_slices')
+	data_dir_lidc = Path('F:\\master\\LIDC\\nodules_16slices')
+	output_dir = Path('F:\\master\\output_bayesian\\final_output')
 	models_dir = Path('C:\\Users\\pau_a\\Documents\\Python_scripts\\bayesian_convolutional_neural_network\\lidc\\bayesian\\models')
+	if sub_folder_name is None:
+		# Format subfolder name
+		d = datetime.now().day
+		mo = datetime.now().month
+		y = datetime.now().year
+		h = datetime.now().hour
+		mi = datetime.now().minute
+		s = datetime.now().second
+		learning_rate_str = str(learning_rate).replace('.','-')
+		sub_folder_name = f'{y:04}{mo:02}{d:02}_{h:02}{mi:02}{s:02}_LeNet3D_dropout_lr{learning_rate_str}_{n_epochs}epochs_{num_networks}models_{n_runtests}runtests'
+
+	model_dir = (models_dir / sub_folder_name)
+	model_dir.mkdir(parents=True, exist_ok=True)  # Create folder if not existing	
 
 	exp = RunExperiment(
-		train=True,
-		n_batch=64,
-		save_dir=models_dir / '20240504_LeNet3D_dropout',
-		num_networks=10,
+		train=train,
+		n_batch=n_batch,
+		save_dir=model_dir,
+		num_networks=num_networks,
+		learning_rate=learning_rate,
+		n_epochs=n_epochs,
+		n_runtests=n_runtests,
 	)
-	exp.load_data(data_dir)
+	
+	
 	exp.get_models(dropout=True)
 
-	exp.test_model_ensemble(output_dir=output_dir / 'w_dropout' / '20240504_LeNet3D_dropout' / 'lidc')
+	output_dir = output_dir / 'w_dropout' / sub_folder_name
+
+	exp.load_data(data_dir_lidc)
+	output_dir_lidc = output_dir / 'lidc'
+	output_dir_lidc.mkdir(parents=True, exist_ok=True)  # Create folder if not existing
+	if num_networks > 0:
+		exp.test_model_ensemble(output_dir=output_dir_lidc)
+	else:
+		exp.test_individual_model(output_dir=output_dir_lidc)
+	
+	exp.load_data(data_dir_faces, test_val_split=[0, 1], augment=False)
+	output_dir_faces = output_dir / 'celeba'
+	output_dir_faces.mkdir(parents=True, exist_ok=True)  # Create folder if not existing
+	if num_networks > 0:
+		exp.test_model_ensemble(output_dir=output_dir_faces)
+	else:
+		exp.test_individual_model(output_dir=output_dir_faces)
+
 
 if __name__ == '__main__':
-	LeNet3d_VI()
+	# for learning_rate in [0.005]: # 0.0005, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008, 0.009
+	# 	for num_networks in [50]:  # 2, 3, 5, 10, 15, 20
+	# 		for n_epochs in [35]:
+	# 			for n_runtests in [5000]:
+	# 				LeNet3d_VI(
+	# 					train=True,
+	# 					n_batch=64,
+	# 					num_networks=num_networks,
+	# 					learning_rate=learning_rate,
+	# 					n_epochs=n_epochs,
+	# 					n_runtests=n_runtests,
+	# 					sub_folder_name=None,
+	# 				)
+
+	for learning_rate in [0.0005]: # 0.0005, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008, 0.009
+		for num_networks in [50]:  # 2, 3, 5, 10, 15, 20
+			for n_epochs in [180]:
+				for n_runtests in [1000]:
+					LeNet3d_VI_dropout(
+						train=True,
+						n_batch=64,
+						num_networks=num_networks,
+						learning_rate=learning_rate,
+						n_epochs=n_epochs,
+						n_runtests=n_runtests,
+						sub_folder_name=None,
+					)
+	# LeNet3d_VI(
+	# 	train=False,
+	# 	n_batch=64,
+	# 	num_networks=100,
+	# 	learning_rate=0.004,
+	# 	n_epochs=35,
+	# 	sub_folder_name='20240510_103914_LeNet3D_lr0-004_35epochs_50models',
+	# )
+	
