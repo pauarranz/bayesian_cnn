@@ -295,7 +295,7 @@ class BayesianLidcNodulesNet(VIModule):
 		x = self.conv1(x, stochastic=stochastic)
 		# MC-Dropout
 		if self.mc_dropout:
-			x = nn.functional.dropout3d(x, p=0.5, training=stochastic)
+			x = nn.functional.dropout3d(x, p=0.2, training=stochastic)
   		# Max pooling 3D
 		x = nn.functional.relu(nn.functional.max_pool3d(input=x, kernel_size=2, stride=2))
 
