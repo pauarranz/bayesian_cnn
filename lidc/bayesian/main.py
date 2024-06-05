@@ -767,12 +767,11 @@ def LeNet3d_VI_dropout(train=True, n_batch=64, num_networks=10, learning_rate=0.
 		n_runtests=n_runtests,
 	)
 	
-	
+	exp.load_data(data_dir_lidc)
 	exp.get_models(dropout=True)
 
 	output_dir = output_dir / 'w_dropout' / sub_folder_name
 
-	exp.load_data(data_dir_lidc)
 	output_dir_lidc = output_dir / 'lidc'
 	output_dir_lidc.mkdir(parents=True, exist_ok=True)  # Create folder if not existing
 	if num_networks > 0:
@@ -805,9 +804,35 @@ if __name__ == '__main__':
 	# 				)
 
 	for learning_rate in [0.0005]: # 0.0005, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008, 0.009
-		for num_networks in [50]:  # 2, 3, 5, 10, 15, 20
+		for num_networks in [10]:  # 2, 3, 5, 10, 15, 20
 			for n_epochs in [180]:
 				for n_runtests in [1000]:
+					LeNet3d_VI_dropout(
+						train=True,
+						n_batch=64,
+						num_networks=num_networks,
+						learning_rate=learning_rate,
+						n_epochs=n_epochs,
+						n_runtests=n_runtests,
+						sub_folder_name=None,
+					)
+	for learning_rate in [0.0005]: # 0.0005, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008, 0.009
+		for num_networks in [50]:  # 2, 3, 5, 10, 15, 20
+			for n_epochs in [180]:
+				for n_runtests in [5000]:
+					LeNet3d_VI_dropout(
+						train=True,
+						n_batch=64,
+						num_networks=num_networks,
+						learning_rate=learning_rate,
+						n_epochs=n_epochs,
+						n_runtests=n_runtests,
+						sub_folder_name=None,
+					)
+	for learning_rate in [0.0005]: # 0.0005, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008, 0.009
+		for num_networks in [20]:  # 2, 3, 5, 10, 15, 20
+			for n_epochs in [180]:
+				for n_runtests in [2000]:
 					LeNet3d_VI_dropout(
 						train=True,
 						n_batch=64,
