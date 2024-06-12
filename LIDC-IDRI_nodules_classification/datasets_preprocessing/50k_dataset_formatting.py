@@ -1,7 +1,7 @@
-# https://www.kaggle.com/datasets/therealcyberlord/50k-celeba-dataset-64x64
 from pathlib import Path
 from PIL import Image
 from tqdm import tqdm
+
 
 def format_repeated_slices(dataset_dir, output_dir, num_samples):
     for id, image in tqdm(enumerate(dataset_dir.iterdir(), start=1)):
@@ -17,6 +17,7 @@ def format_repeated_slices(dataset_dir, output_dir, num_samples):
         # Stop when required data samples have been generated
         if id >= num_samples:
             break
+
 
 def format_unique_slices(dataset_dir, output_dir, num_samples):
     sample_id = 1
@@ -44,6 +45,7 @@ def format_unique_slices(dataset_dir, output_dir, num_samples):
         # Stop when required data samples have been generated
         if sample_id >= num_samples+1:
             break
+
 
 if __name__ == '__main__':
     dataset_dir = Path('F:\\master\\random_data\\50K')

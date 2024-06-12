@@ -699,7 +699,7 @@ def LeNet3d_VI(train=True, n_batch=64, num_networks=10, learning_rate=0.005, n_e
 	data_dir_faces = Path('F:\\master\\random_data\\50K_sample_1k_unique_slices')
 	data_dir_lidc = Path('F:\\master\\LIDC\\nodules_16slices')
 	output_dir = Path('F:\\master\\output_bayesian\\test')
-	models_dir = Path('C:\\Users\\pau_a\\Documents\\Python_scripts\\bayesian_convolutional_neural_network\\lidc\\bayesian\\models')
+	models_dir = Path('/LIDC-IDRI_nodules_classification/bayes_by_backpropagation\\models')
 
 	if sub_folder_name is None:
 		# Format subfolder name
@@ -710,7 +710,7 @@ def LeNet3d_VI(train=True, n_batch=64, num_networks=10, learning_rate=0.005, n_e
 		mi = datetime.now().minute
 		s = datetime.now().second
 		learning_rate_str = str(learning_rate).replace('.', '-')
-		sub_folder_name = f'{y:04}{mo:02}{d:02}_{h:02}{mi:02}{s:02}_LeNet3D_lr{learning_rate_str}_{n_epochs}epochs_{num_networks}models_{n_runtests}runtests'
+		sub_folder_name = f'{y:04}{mo:02}{d:02}_{h:02}{mi:02}{s:02}_LeNet3D_lr{learning_rate_str}_{n_epochs}epochs_{num_networks}models_{n_runtests}runtests_{n_batch}batch'
 
 	model_dir = (models_dir / sub_folder_name)
 	model_dir.mkdir(parents=True, exist_ok=True)  # Create folder if not existing	
@@ -728,6 +728,7 @@ def LeNet3d_VI(train=True, n_batch=64, num_networks=10, learning_rate=0.005, n_e
 	exp.get_models(dropout=False)
 
 	output_dir = output_dir / 'wo_dropout' / sub_folder_name
+
 	output_dir_lidc = output_dir / 'lidc'
 	output_dir_lidc.mkdir(parents=True, exist_ok=True)  # Create folder if not existing
 	exp.test_model_ensemble(output_dir=output_dir_lidc)
@@ -742,7 +743,7 @@ def LeNet3d_VI_dropout(train=True, n_batch=64, num_networks=10, learning_rate=0.
 	data_dir_faces = Path('F:\\master\\random_data\\50K_sample_1k_unique_slices')
 	data_dir_lidc = Path('F:\\master\\LIDC\\nodules_16slices')
 	output_dir = Path('F:\\master\\output_bayesian\\final_output')
-	models_dir = Path('C:\\Users\\pau_a\\Documents\\Python_scripts\\bayesian_convolutional_neural_network\\lidc\\bayesian\\models')
+	models_dir = Path('/LIDC-IDRI_nodules_classification/bayes_by_backpropagation\\models')
 	if sub_folder_name is None:
 		# Format subfolder name
 		d = datetime.now().day
@@ -752,7 +753,7 @@ def LeNet3d_VI_dropout(train=True, n_batch=64, num_networks=10, learning_rate=0.
 		mi = datetime.now().minute
 		s = datetime.now().second
 		learning_rate_str = str(learning_rate).replace('.','-')
-		sub_folder_name = f'{y:04}{mo:02}{d:02}_{h:02}{mi:02}{s:02}_LeNet3D_dropout_lr{learning_rate_str}_{n_epochs}epochs_{num_networks}models_{n_runtests}runtests'
+		sub_folder_name = f'{y:04}{mo:02}{d:02}_{h:02}{mi:02}{s:02}_LeNet3D_dropout_lr{learning_rate_str}_{n_epochs}epochs_{num_networks}models_{n_runtests}runtests_{n_batch}batch'
 
 	model_dir = (models_dir / sub_folder_name)
 	model_dir.mkdir(parents=True, exist_ok=True)  # Create folder if not existing	
@@ -774,80 +775,42 @@ def LeNet3d_VI_dropout(train=True, n_batch=64, num_networks=10, learning_rate=0.
 
 	output_dir_lidc = output_dir / 'lidc'
 	output_dir_lidc.mkdir(parents=True, exist_ok=True)  # Create folder if not existing
-	if num_networks > 0:
-		exp.test_model_ensemble(output_dir=output_dir_lidc)
-	else:
-		exp.test_individual_model(output_dir=output_dir_lidc)
-	
+	exp.test_model_ensemble(output_dir=output_dir_lidc)
+
 	exp.load_data(data_dir_faces, test_val_split=[0, 1], augment=False)
-	output_dir_faces = output_dir / 'celeba'
+	mi = datetime.now().minute
+	output_dir_faces = output_dir / f'celeba'
 	output_dir_faces.mkdir(parents=True, exist_ok=True)  # Create folder if not existing
-	if num_networks > 0:
-		exp.test_model_ensemble(output_dir=output_dir_faces)
-	else:
-		exp.test_individual_model(output_dir=output_dir_faces)
+	exp.test_model_ensemble(output_dir=output_dir_faces)
 
 
 if __name__ == '__main__':
 	# for learning_rate in [0.005]: # 0.0005, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008, 0.009
-	# 	for num_networks in [50]:  # 2, 3, 5, 10, 15, 20
-	# 		for n_epochs in [35]:
-	# 			for n_runtests in [5000]:
-	# 				LeNet3d_VI(
-	# 					train=True,
-	# 					n_batch=64,
-	# 					num_networks=num_networks,
-	# 					learning_rate=learning_rate,
-	# 					n_epochs=n_epochs,
-	# 					n_runtests=n_runtests,
-	# 					sub_folder_name=None,
-	# 				)
+	# 	for num_networks in [1]:  # 2, 3, 5, 10, 15, 20
+	# 		for n_epochs in [45, 50]:
+	# 			n_runtests = num_networks * 100
+	# 			LeNet3d_VI(
+	# 				train=True,
+	# 				n_batch=64,
+	# 				num_networks=num_networks,
+	# 				learning_rate=learning_rate,
+	# 				n_epochs=n_epochs,
+	# 				n_runtests=n_runtests,
+	# 				sub_folder_name=None,
+	# 			)
 
 	for learning_rate in [0.0005]: # 0.0005, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008, 0.009
-		for num_networks in [10]:  # 2, 3, 5, 10, 15, 20
-			for n_epochs in [180]:
-				for n_runtests in [1000]:
+		for num_networks in [1]:  # 2, 3, 5, 10, 15, 20
+			for n_epochs in [220]:
+				for n_batch in [64]:
+					n_runtests = num_networks * 100
 					LeNet3d_VI_dropout(
 						train=True,
-						n_batch=64,
+						n_batch=n_batch,
 						num_networks=num_networks,
 						learning_rate=learning_rate,
 						n_epochs=n_epochs,
 						n_runtests=n_runtests,
 						sub_folder_name=None,
 					)
-	for learning_rate in [0.0005]: # 0.0005, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008, 0.009
-		for num_networks in [50]:  # 2, 3, 5, 10, 15, 20
-			for n_epochs in [180]:
-				for n_runtests in [5000]:
-					LeNet3d_VI_dropout(
-						train=True,
-						n_batch=64,
-						num_networks=num_networks,
-						learning_rate=learning_rate,
-						n_epochs=n_epochs,
-						n_runtests=n_runtests,
-						sub_folder_name=None,
-					)
-	for learning_rate in [0.0005]: # 0.0005, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008, 0.009
-		for num_networks in [20]:  # 2, 3, 5, 10, 15, 20
-			for n_epochs in [180]:
-				for n_runtests in [2000]:
-					LeNet3d_VI_dropout(
-						train=True,
-						n_batch=64,
-						num_networks=num_networks,
-						learning_rate=learning_rate,
-						n_epochs=n_epochs,
-						n_runtests=n_runtests,
-						sub_folder_name=None,
-					)
-	# LeNet3d_VI(
-	# 	train=False,
-	# 	n_batch=64,
-	# 	num_networks=100,
-	# 	learning_rate=0.004,
-	# 	n_epochs=35,
-	# 	sub_folder_name='20240510_103914_LeNet3D_lr0-004_35epochs_50models',
-	# )
 	
